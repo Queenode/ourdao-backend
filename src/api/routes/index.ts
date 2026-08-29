@@ -225,12 +225,12 @@ export async function registerRoutes(app: FastifyInstance, opts: { nonceStore: N
           'position', json_build_object(
             'contribution_share_bps', CASE 
               WHEN (SELECT total_contribution FROM totals) > 0 
-              THEN ((m.contribution * 10000) / (SELECT total_contribution FROM totals))::text 
+              THEN TRUNC((m.contribution * 10000) / (SELECT total_contribution FROM totals))::text 
               ELSE '0' 
             END,
             'stake_share_bps', CASE 
               WHEN (SELECT total_stake FROM totals) > 0 AND m.exited = false
-              THEN ((m.stake * 10000) / (SELECT total_stake FROM totals))::text 
+              THEN TRUNC((m.stake * 10000) / (SELECT total_stake FROM totals))::text 
               ELSE '0' 
             END,
             'repaid_loans_count', COALESCE((SELECT repaid_loans_count::int FROM member_loans), 0),
@@ -287,7 +287,8 @@ export async function registerRoutes(app: FastifyInstance, opts: { nonceStore: N
   app.get('/proposals/loan', async (req, reply) => {
     reply.header('Cache-Control', 'public, max-age=5, must-revalidate')
     const l = limit((req.query as Record<string, unknown>).limit)
-    return query<LoanProposalRow>('SELECT * FROM loan_proposals ORDER BY id DESC LIMIT $1', [l])
+    const rows = await query<LoanProposalRow>('SELECT * FROM loan_proposals ORDER BY id DESC LIMIT $1', [l])
+    return rows.map(r => ({ ...r, tallies_weighted: false }))
   })
 
   // --- Loans (optional ?borrower= filter, ?before=<id> cursor) ---
@@ -347,7 +348,8 @@ export async function registerRoutes(app: FastifyInstance, opts: { nonceStore: N
   app.get('/proposals/treasury', async (req, reply) => {
     reply.header('Cache-Control', 'public, max-age=5, must-revalidate')
     const l = limit((req.query as Record<string, unknown>).limit)
-    return query<TreasuryProposalRow>('SELECT * FROM treasury_proposals ORDER BY id DESC LIMIT $1', [l])
+    const rows = await query<TreasuryProposalRow>('SELECT * FROM treasury_proposals ORDER BY id DESC LIMIT $1', [l])
+    return rows.map(r => ({ ...r, tallies_weighted: false }))
   })
 
   // --- A treasury proposal's full event history (issue #26) ---
@@ -406,6 +408,7 @@ export async function registerRoutes(app: FastifyInstance, opts: { nonceStore: N
 
     const symbol = typeof q.symbol === 'string' && q.symbol ? q.symbol : null
     const contract = typeof q.contract === 'string' && q.contract ? q.contract : null
+    const decodeError = q.decode_error === 'true'
 
     const conditions: string[] = []
     const params: unknown[] = []
@@ -416,6 +419,9 @@ export async function registerRoutes(app: FastifyInstance, opts: { nonceStore: N
     if (contract) {
       params.push(contract)
       conditions.push(`contract_id = $${params.length}`)
+    }
+    if (decodeError) {
+      conditions.push(`decode_error IS NOT NULL`)
     }
     if (before !== null) {
       if (before.id) {
